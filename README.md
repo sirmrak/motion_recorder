@@ -1,6 +1,7 @@
 # Motion Recorder for Home Assistant
+English | [Русский](README.ru.md)
 
-A powerful Home Assistant integration for recording camera streams based on motion detection with advanced filtering and automated management.
+## A powerful Home Assistant integration for recording camera streams based on motion detection with advanced filtering and automated management.
 
 ## Features
 
@@ -310,4 +311,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 **Version**: 1.0.0  
 **Last Updated**: 2026-07-03  
 **Compatible with**: Home Assistant 2024.6+
-```
