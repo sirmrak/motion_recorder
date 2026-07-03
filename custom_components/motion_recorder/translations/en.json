@@ -1,0 +1,91 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Motion Recorder Settings",
+        "description": "Configure motion-based camera recording integration",
+        "data": {
+          "name": "Integration Name",
+          "camera_entity": "Camera to record",
+          "save_path": "Save path (relative to media)",
+          "filename_template": "Filename format",
+          "max_duration": "Maximum recording duration (seconds)",
+          "prebuffer": "Prebuffer (seconds, 0 = disabled)",
+          "motion_sensors": "Motion sensors",
+          "motion_filter": "Motion detection filter (seconds, 0 = no filter)",
+          "off_delay": "Delay after motion stops (seconds, 0 = no delay)",
+          "retention_days": "Keep recordings (days, 0 = never delete)",
+          "force_stop_sensor": "Force stop sensor (binary_sensor, switch, input_boolean)",
+          "force_stop_state": "Stop state value",
+          "log_level": "Log level"
+        },
+        "data_description": {
+          "name": "Name that will be displayed in the integration",
+          "camera_entity": "Select a camera from the list of available",
+          "save_path": "Folder for saving recordings relative to /media. Variables are supported, e.g. camera_name",
+          "filename_template": "Select date and time format for recording filenames. All formats include seconds to avoid file overwriting when multiple triggers occur in the same minute",
+          "max_duration": "Maximum time of one recording (10-3600 seconds). If motion does not stop, recording will stop by timeout",
+          "prebuffer": "How many seconds before motion detection to include in recording. Works only if stream is already active",
+          "motion_sensors": "You can select multiple sensors. Recording will start when any of them triggers",
+          "motion_filter": "Delay before starting recording. If motion stops earlier — recording will not start (false trigger protection)",
+          "off_delay": "How many seconds to wait after motion stops before stopping recording. If motion returns — timer resets",
+          "retention_days": "Automatically delete recordings older than specified days. 0 = never delete. Cleanup runs daily at 03:00",
+          "force_stop_sensor": "Optional. Entity that will immediately stop recording when it reaches the specified state",
+          "force_stop_state": "State value of the force stop sensor (usually 'off' or 'on')",
+          "log_level": "Log detail level. DEBUG — for debugging, INFO — normal mode"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one configuration per camera is allowed"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Motion Recorder Settings",
+        "description": "Change recording parameters",
+        "data": {
+          "filename_template": "Filename format",
+          "max_duration": "Maximum recording duration (seconds)",
+          "prebuffer": "Prebuffer (seconds, 0 = disabled)",
+          "motion_filter": "Motion detection filter (seconds, 0 = no filter)",
+          "off_delay": "Delay after motion stops (seconds, 0 = no delay)",
+          "retention_days": "Keep recordings (days, 0 = never delete)",
+          "log_level": "Log level"
+        },
+        "data_description": {
+          "filename_template": "Select date and time format for recording filenames",
+          "max_duration": "Maximum time of one recording (10-3600 seconds)",
+          "prebuffer": "How many seconds before motion detection to include in recording",
+          "motion_filter": "Delay before starting recording for false trigger protection",
+          "off_delay": "How many seconds to wait after motion stops before stopping recording",
+          "retention_days": "Automatically delete recordings older than specified days. 0 = never delete",
+          "log_level": "Log detail level"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "motion_recorder_status": {
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "detecting": "Detecting",
+          "recording": "Recording",
+          "delaying": "Delaying",
+          "finalizing": "Finalizing",
+          "completed": "Completed",
+          "error": "Error",
+          "disabled": "Disabled"
+        }
+      }
+    },
+    "switch": {
+      "motion_recorder_enabled": {
+        "name": "Recording Enabled"
+      }
+    }
+  }
+}
