@@ -14,9 +14,11 @@
           "motion_sensors": "Motion sensors",
           "motion_filter": "Motion detection filter (seconds, 0 = no filter)",
           "off_delay": "Delay after motion stops (seconds, 0 = no delay)",
-          "retention_days": "Keep recordings (days, 0 = never delete)",
           "force_stop_sensor": "Force stop sensor (binary_sensor, switch, input_boolean)",
           "force_stop_state": "Stop state value",
+          "retention_days": "Keep recordings (days, 0 = never delete)",
+          "controlled_entities": "Controlled devices (light/switch)",
+          "control_states": "Turn on at states",
           "log_level": "Log level"
         },
         "data_description": {
@@ -29,9 +31,11 @@
           "motion_sensors": "You can select multiple sensors. Recording will start when any of them triggers",
           "motion_filter": "Delay before starting recording. If motion stops earlier — recording will not start (false trigger protection)",
           "off_delay": "How many seconds to wait after motion stops before stopping recording. If motion returns — timer resets",
-          "retention_days": "Automatically delete recordings older than specified days. 0 = never delete. Cleanup runs daily at 03:00",
           "force_stop_sensor": "Optional. Entity that will immediately stop recording when it reaches the specified state",
           "force_stop_state": "State value of the force stop sensor (usually 'off' or 'on')",
+          "retention_days": "Automatically delete recordings older than specified days. 0 = never delete. Cleanup runs daily at 03:00",
+          "controlled_entities": "List of lights or switches that will be automatically turned on/off depending on the integration state",
+          "control_states": "Select states when controlled devices should be turned on. In other states they will be turned off (only if they were turned on by the integration)",
           "log_level": "Log detail level. DEBUG — for debugging, INFO — normal mode"
         }
       }
@@ -52,6 +56,8 @@
           "motion_filter": "Motion detection filter (seconds, 0 = no filter)",
           "off_delay": "Delay after motion stops (seconds, 0 = no delay)",
           "retention_days": "Keep recordings (days, 0 = never delete)",
+          "controlled_entities": "Controlled devices (light/switch)",
+          "control_states": "Turn on at states",
           "log_level": "Log level"
         },
         "data_description": {
@@ -61,6 +67,8 @@
           "motion_filter": "Delay before starting recording for false trigger protection",
           "off_delay": "How many seconds to wait after motion stops before stopping recording",
           "retention_days": "Automatically delete recordings older than specified days. 0 = never delete",
+          "controlled_entities": "List of lights or switches for automatic control",
+          "control_states": "States when devices should be turned on",
           "log_level": "Log detail level"
         }
       }
@@ -76,7 +84,6 @@
           "recording": "Recording",
           "delaying": "Delaying",
           "finalizing": "Finalizing",
-          "completed": "Completed",
           "error": "Error",
           "disabled": "Disabled"
         }
