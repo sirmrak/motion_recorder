@@ -6,7 +6,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.device_registry import DeviceInfo
 
-from .const import DOMAIN, CONF_CAMERA_ENTITY
+from .const import DOMAIN
 
 
 async def async_setup_entry(
@@ -29,25 +29,22 @@ class MotionRecorderStatusSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_status"
         self._attr_name = f"{entry.title} Статус"
         self._attr_translation_key = "motion_recorder_status"
-        
-        # Добавляем информацию об устройстве
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
             manufacturer="Motion Recorder",
             model="Camera Recording Integration",
         )
-        
-        # Icon mapping
+
         self._icon_map = {
             "idle": "mdi:sleep",
             "detecting": "mdi:motion-sensor",
             "recording": "mdi:record-rec",
             "delaying": "mdi:timer-sand",
             "finalizing": "mdi:file-check",
-            "completed": "mdi:check-circle",
             "error": "mdi:alert-circle",
-            "disabled": "mdi:video-off", 
+            "disabled": "mdi:video-off",
         }
 
     @property
