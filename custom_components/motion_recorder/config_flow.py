@@ -18,6 +18,8 @@ from .const import (
     CONF_FORCE_STOP_STATE,
     CONF_LOG_LEVEL,
     CONF_RETENTION_DAYS,
+    CONF_CONTROLLED_ENTITIES,
+    CONF_CONTROL_STATES,
     DEFAULT_NAME,
     DEFAULT_SAVE_PATH,
     DEFAULT_FILENAME_TEMPLATE,
@@ -28,10 +30,16 @@ from .const import (
     DEFAULT_FORCE_STOP_STATE,
     DEFAULT_LOG_LEVEL,
     DEFAULT_RETENTION_DAYS,
+    DEFAULT_CONTROL_STATES,
+    STATE_IDLE,
+    STATE_DETECTING,
+    STATE_RECORDING,
+    STATE_DELAYING,
+    STATE_FINALIZING,
+    STATE_ERROR,
+    STATE_DISABLED,
 )
 
-
-# Список шаблонов имени файла (все с секундами для уникальности)
 FILENAME_TEMPLATE_OPTIONS = [
     selector.SelectOptionDict(value="%d-%m-%Y_%H-%M-%S", label="ДД-ММ-ГГГГ_ЧЧ-ММ-СС (02-07-2026_20-30-45)"),
     selector.SelectOptionDict(value="%Y-%m-%d_%H-%M-%S", label="ГГГГ-ММ-ДД_ЧЧ-ММ-СС (2026-07-02_20-30-45)"),
@@ -40,25 +48,35 @@ FILENAME_TEMPLATE_OPTIONS = [
     selector.SelectOptionDict(value="%d.%m.%Y_%H.%M.%S", label="ДД.ММ.ГГГГ_ЧЧ.ММ.СС (все точки)"),
 ]
 
+CONTROL_STATE_OPTIONS = [
+    selector.SelectOptionDict(value=STATE_IDLE, label="Ожидание (idle)"),
+    selector.SelectOptionDict(value=STATE_DETECTING, label="Обнаружение (detecting)"),
+    selector.SelectOptionDict(value=STATE_RECORDING, label="Запись (recording)"),
+    selector.SelectOptionDict(value=STATE_DELAYING, label="Задержка (delaying)"),
+    selector.SelectOptionDict(value=STATE_FINALIZING, label="Завершение (finalizing)"),
+    selector.SelectOptionDict(value=STATE_ERROR, label="Ошибка (error)"),
+    selector.SelectOptionDict(value=STATE_DISABLED, label="Отключено (disabled)"),
+]
+
 
 class MotionRecorderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Motion Recorder."""
-    
+
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
         errors = {}
-        
+
         if user_input is not None:
             await self.async_set_unique_id(user_input[CONF_CAMERA_ENTITY])
             self._abort_if_unique_id_configured()
-            
+
             return self.async_create_entry(
                 title=user_input.get("name", DEFAULT_NAME),
                 data=user_input,
             )
-        
+
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
@@ -104,13 +122,6 @@ class MotionRecorderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         unit_of_measurement="сек",
                     )
                 ),
-                vol.Required(CONF_RETENTION_DAYS, default=DEFAULT_RETENTION_DAYS): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0, max=365, step=1,
-                        mode=selector.NumberSelectorMode.SLIDER,
-                        unit_of_measurement="дн",
-                    )
-                ),
                 vol.Optional(CONF_FORCE_STOP_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(
                         domain=["binary_sensor", "switch", "input_boolean"],
@@ -118,6 +129,26 @@ class MotionRecorderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
                 vol.Required(CONF_FORCE_STOP_STATE, default=DEFAULT_FORCE_STOP_STATE): str,
+                vol.Required(CONF_RETENTION_DAYS, default=DEFAULT_RETENTION_DAYS): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=365, step=1,
+                        mode=selector.NumberSelectorMode.SLIDER,
+                        unit_of_measurement="дн",
+                    )
+                ),
+                vol.Optional(CONF_CONTROLLED_ENTITIES, default=[]): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain=["light", "switch"],
+                        multiple=True,
+                    )
+                ),
+                vol.Optional(CONF_CONTROL_STATES, default=DEFAULT_CONTROL_STATES): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=CONTROL_STATE_OPTIONS,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
                 vol.Required(CONF_LOG_LEVEL, default=DEFAULT_LOG_LEVEL): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
@@ -147,7 +178,7 @@ class MotionRecorderOptionsFlow(config_entries.OptionsFlow):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-        
+
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
@@ -163,7 +194,7 @@ class MotionRecorderOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Required(
                     CONF_MAX_DURATION,
-                    default=self.config_entry.options.get(CONF_MAX_DURATION, 
+                    default=self.config_entry.options.get(CONF_MAX_DURATION,
                             self.config_entry.data.get(CONF_MAX_DURATION, DEFAULT_MAX_DURATION))
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
@@ -214,6 +245,31 @@ class MotionRecorderOptionsFlow(config_entries.OptionsFlow):
                         min=0, max=365, step=1,
                         mode=selector.NumberSelectorMode.SLIDER,
                         unit_of_measurement="дн",
+                    )
+                ),
+                vol.Optional(
+                    CONF_CONTROLLED_ENTITIES,
+                    default=self.config_entry.options.get(
+                        CONF_CONTROLLED_ENTITIES,
+                        self.config_entry.data.get(CONF_CONTROLLED_ENTITIES, [])
+                    )
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain=["light", "switch"],
+                        multiple=True,
+                    )
+                ),
+                vol.Optional(
+                    CONF_CONTROL_STATES,
+                    default=self.config_entry.options.get(
+                        CONF_CONTROL_STATES,
+                        self.config_entry.data.get(CONF_CONTROL_STATES, DEFAULT_CONTROL_STATES)
+                    )
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=CONTROL_STATE_OPTIONS,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
                 vol.Required(
