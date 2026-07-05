@@ -1,7 +1,7 @@
 {
   "domain": "motion_recorder",
   "name": "Motion Recorder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "documentation": "https://github.com/sirmrak/motion_recorder",
   "issue_tracker": "https://github.com/sirmrak/motion_recorder/issues",
   "dependencies": ["camera", "stream"],
