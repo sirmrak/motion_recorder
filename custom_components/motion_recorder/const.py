@@ -13,7 +13,9 @@ CONF_OFF_DELAY = "off_delay"
 CONF_FORCE_STOP_SENSOR = "force_stop_sensor"
 CONF_FORCE_STOP_STATE = "force_stop_state"
 CONF_LOG_LEVEL = "log_level"
-CONF_RETENTION_DAYS = "retention_days" 
+CONF_RETENTION_DAYS = "retention_days"
+CONF_CONTROLLED_ENTITIES = "controlled_entities"
+CONF_CONTROL_STATES = "control_states"
 
 # Defaults
 DEFAULT_NAME = "Motion Recorder"
@@ -26,6 +28,7 @@ DEFAULT_OFF_DELAY = 10
 DEFAULT_FORCE_STOP_STATE = "off"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_RETENTION_DAYS = 7
+DEFAULT_CONTROL_STATES = ["recording"]
 
 # Sensor states
 STATE_IDLE = "idle"
@@ -33,6 +36,15 @@ STATE_DETECTING = "detecting"
 STATE_RECORDING = "recording"
 STATE_DELAYING = "delaying"
 STATE_FINALIZING = "finalizing"
-STATE_COMPLETED = "completed"
 STATE_ERROR = "error"
-STATE_DISABLED = "disabled" 
+STATE_DISABLED = "disabled"
+
+ALL_STATES = [
+    STATE_IDLE,
+    STATE_DETECTING,
+    STATE_RECORDING,
+    STATE_DELAYING,
+    STATE_FINALIZING,
+    STATE_ERROR,
+    STATE_DISABLED,
+]
