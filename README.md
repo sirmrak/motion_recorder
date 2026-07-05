@@ -19,6 +19,8 @@ English | [Русский](README.ru.md)
 -  **Force stop sensor** - Stop recording based on any entity state
 -  **Enable/disable switch** - Control recording with a toggle
 -  **Status sensor** - Monitor recording state with beautiful icons
+-  **Smart device control** - Automatically turn on/off lights or switches based on recording state
+-  **Auto-cleanup** - Delete old recordings by retention policy (daily at 03:00)
 -  **Multi-language support** - English and Russian translations
 -  **Hot reload** - Settings apply immediately without restart
 
@@ -66,6 +68,8 @@ When adding the integration, you'll configure:
 | **Force Stop Sensor** | Entity to force stop recording | - | - |
 | **Force Stop State** | State value to trigger stop | `off` | - |
 | **Retention Days** | Auto-delete recordings older than | 7 days | 0-365 days |
+| **Controlled Devices** | Lights/switches to auto-control | - | - |
+| **Control States** | States when devices should be ON | `recording` | Multi-select |
 | **Log Level** | Logging verbosity | INFO | - |
 
 ### Options (Post-Setup)
@@ -77,6 +81,8 @@ After initial setup, you can modify these settings via **Settings → Devices & 
 - Motion filter
 - Off delay
 - Retention days
+- Controlled Devices
+- Control States
 - Log level
 
 Changes apply immediately without restart.
@@ -216,6 +222,29 @@ Files older than the retention period are automatically deleted daily at 03:00.
 - **365 days** = Delete files older than 1 year
 
 Cleanup runs in the background and doesn't affect recording performance.
+
+## Smart Device Control
+
+Motion Recorder can automatically control lights and switches based on its current state.
+
+### How It Works
+
+1. Select one or more `light` or `switch` entities in settings
+2. Choose which states should trigger the devices (e.g., `recording`, `delaying`)
+3. When the integration enters a selected state → devices turn ON
+4. When it leaves that state → devices turn OFF (only if integration turned them on)
+
+### Safety Features
+
+- **Non-intrusive**: If you manually turn on a light, the integration won't turn it off
+- **Manual override respected**: If you turn off a controlled light during recording, it stays off
+- **Shutdown cleanup**: All integration-controlled devices are turned off when HA restarts or integration reloads
+
+### Example Use Cases
+
+- Turn on porch light only while recording is active
+- Activate alarm indicator LED during motion detection
+- Turn on indoor lighting when camera detects movement at night
 
 ## Advanced Features
 
