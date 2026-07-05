@@ -337,6 +337,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: 2026-07-03  
+**Version**: 1.1.0  
+**Last Updated**: 2026-07-05  
 **Compatible with**: Home Assistant 2024.6+
