@@ -1,4 +1,4 @@
-# Motion Recorder for Home Assistant
+# <img src="custom_components/motion_recorder/brand/icon.png" width="64"> </img> Motion Recorder for Home Assistant
 English | [Русский](README.ru.md)
 
 ## A powerful Home Assistant integration for recording camera streams based on motion detection with advanced filtering and automated management.
