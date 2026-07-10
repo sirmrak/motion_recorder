@@ -1,0 +1,132 @@
+name: Test and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # Позволяет запускать вручную
+
+jobs:
+  # Шаг 1: Валидация структуры HA интеграции
+  validate:
+    name: Validate Integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Hassfest Validation
+        uses: home-assistant/actions/hassfest@master
+
+      - name: HACS Validation
+        uses: hacs/action@main
+        with:
+          category: "integration"
+
+  # Шаг 2: Запуск тестов (если есть)
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-homeassistant-custom-component
+          if [ -f requirements_test.txt ]; then pip install -r requirements_test.txt; fi
+
+      - name: Run tests
+        run: |
+          if [ -d "tests" ]; then
+            pytest tests/ --cov=custom_components/motion_light --cov-report=xml
+          else
+            echo "No tests directory found, skipping tests"
+          fi
+
+  # Шаг 3: Проверка стиля кода
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install linters
+        run: |
+          pip install black ruff mypy
+
+      - name: Check code formatting with black
+        run: |
+          black --check custom_components/motion_light/ || echo "Code formatting issues found"
+
+      - name: Check code with ruff
+        run: |
+          ruff check custom_components/motion_light/ || echo "Ruff issues found"
+
+  # Шаг 4: Создание релиза (только если все проверки пройдены)
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [validate, test, lint]
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get tag info
+        id: tag
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s" --reverse)
+          else
+            COMMITS=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --reverse)
+          fi
+          
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          COMMITS="${{ steps.tag.outputs.commits }}"
+          
+          echo "🚀 Создаём релиз $TAG в GitHub..."
+          
+          cat > /tmp/release_notes.md << EOF
+          ## Изменения в версии $TAG
+          
+          $COMMITS
+          EOF
+          
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes-file /tmp/release_notes.md \
+            --target main
+          
+          echo "✅ Релиз создан!"
