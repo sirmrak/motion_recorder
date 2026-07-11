@@ -91,6 +91,8 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
 
         # Enabled state
         self._enabled = True
+        
+        self._force_stopped = False
 
         # Listeners
         self._unsub_motion_listeners = []
@@ -146,6 +148,7 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         attrs["recordings_count"] = self._recordings_count
         attrs["total_duration"] = self._total_duration
         attrs["total_size"] = self._total_size
+        attrs["force_stopped"] = self._force_stopped
         return attrs
 
     @property
@@ -159,16 +162,38 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Recording %s", "enabled" if enabled else "disabled")
 
         if not enabled:
+            await self._cancel_all_timers()
+            
+            # Останавливаем запись если идёт
             if self._state == STATE_RECORDING:
                 await self._stop_recording()
+            
+            # Переходим в disabled
             await self._update_state(STATE_DISABLED)
         else:
-            await self._update_state(STATE_IDLE)
+            # Включаем только если не заблокированы force_stop
+            if self._force_stopped:
+                _LOGGER.info("Cannot enable: force stop is active")
+                await self._update_state(STATE_DISABLED)
+            else:
+                await self._update_state(STATE_IDLE)
 
         self.async_set_updated_data({
             "state": self._state,
             "attributes": self.attributes
         })
+
+    async def _cancel_all_timers(self) -> None:
+        """Отменить все активные таймеры."""
+        if self._motion_detect_timer:
+            _LOGGER.debug("Cancelling motion detect timer")
+            self._motion_detect_timer()
+            self._motion_detect_timer = None
+        
+        if self._off_delay_timer:
+            _LOGGER.debug("Cancelling off-delay timer")
+            self._off_delay_timer()
+            self._off_delay_timer = None
 
     async def async_setup(self):
         """Set up the coordinator."""
@@ -364,9 +389,43 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         if not new_state:
             return
 
-        if new_state.state == self.force_stop_state:
-            _LOGGER.info("Force stop triggered by %s", event.data.get("entity_id"))
-            self.hass.async_create_task(self._force_stop_recording())
+        new_s = new_state.state
+        sensor_entity = event.data.get("entity_id")
+        
+        _LOGGER.debug("Force stop sensor %s changed to: %s", sensor_entity, new_s)
+
+        if new_s == self.force_stop_state:
+            _LOGGER.info("Force stop ACTIVATED by %s", sensor_entity)
+            self.hass.async_create_task(self._activate_force_stop())
+        else:
+            _LOGGER.info("Force stop DEACTIVATED by %s", sensor_entity)
+            self.hass.async_create_task(self._deactivate_force_stop())
+
+    async def _activate_force_stop(self) -> None:
+        """Активировать force stop блокировку."""
+        self._force_stopped = True
+        _LOGGER.info("Force stop blocking activated")
+        
+        # Отменяем все таймеры
+        await self._cancel_all_timers()
+        
+        # Останавливаем запись если идёт
+        if self._state == STATE_RECORDING:
+            await self._stop_recording()
+        
+        # Переходим в disabled
+        await self._update_state(STATE_DISABLED)
+
+    async def _deactivate_force_stop(self) -> None:
+        """Деактивировать force stop блокировку."""
+        self._force_stopped = False
+        _LOGGER.info("Force stop blocking deactivated")
+        
+        # Возвращаемся в idle только если запись включена
+        if self._enabled:
+            await self._update_state(STATE_IDLE)
+        else:
+            await self._update_state(STATE_DISABLED)
 
     def _is_any_motion_active(self) -> bool:
         """Check if any motion sensor is currently in 'on' state."""
@@ -380,6 +439,10 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         """Handle motion detection with filter."""
         if not self._enabled:
             _LOGGER.debug("Recording disabled, ignoring motion")
+            return
+        
+        if self._force_stopped:
+            _LOGGER.debug("Force stop active, ignoring motion")
             return
 
         _LOGGER.debug("Motion detected by %s, current state: %s", triggered_by, self._state)
@@ -423,6 +486,12 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
 
     async def _start_recording_after_filter(self, _=None):
         """Start recording after motion filter."""
+        if not self._enabled or self._force_stopped:
+            _LOGGER.debug("Cannot start recording: enabled=%s, force_stopped=%s", 
+                         self._enabled, self._force_stopped)
+            await self._update_state(STATE_IDLE if self._enabled else STATE_DISABLED)
+            return
+        
         _LOGGER.debug("Starting recording after filter")
         self._motion_detect_timer = None
         triggered_by = self._attributes.get("triggered_by")
@@ -430,6 +499,10 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
 
     async def _handle_motion_stopped(self):
         """Handle motion stopped with off-delay."""
+        if self._force_stopped:
+            _LOGGER.debug("Force stop active, ignoring motion stopped")
+            return
+        
         _LOGGER.debug("Motion stopped, current state: %s", self._state)
 
         if self._is_any_motion_active():
@@ -465,10 +538,19 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Cancelling motion filter timer")
                 self._motion_detect_timer()
                 self._motion_detect_timer = None
-            await self._update_state(STATE_IDLE)
+            
+            if not self._enabled:
+                await self._update_state(STATE_DISABLED)
+            else:
+                await self._update_state(STATE_IDLE)
 
     async def _stop_recording_after_delay(self, _=None):
         """Stop recording after off-delay."""
+        if self._force_stopped or not self._enabled:
+            _LOGGER.debug("Cannot stop recording: enabled=%s, force_stopped=%s", 
+                         self._enabled, self._force_stopped)
+            return
+        
         _LOGGER.debug("Off-delay timer expired")
         self._off_delay_timer = None
 
@@ -482,6 +564,12 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
 
     async def _start_recording(self, triggered_by):
         """Start recording the camera."""
+        if not self._enabled or self._force_stopped:
+            _LOGGER.warning("Cannot start recording: enabled=%s, force_stopped=%s", 
+                          self._enabled, self._force_stopped)
+            await self._update_state(STATE_IDLE if self._enabled else STATE_DISABLED)
+            return
+        
         try:
             if self._current_stream:
                 recorder_output = self._current_stream.outputs().get(_RECORDER_PROVIDER)
@@ -578,13 +666,13 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Error stopping recording: %s", err, exc_info=True)
             await self._update_state(STATE_ERROR, error_message=str(err))
             await asyncio.sleep(5)
-            if not self._enabled:
+            if not self._enabled or self._force_stopped:
                 await self._update_state(STATE_DISABLED)
             else:
                 await self._update_state(STATE_IDLE)
 
     async def _force_stop_recording(self):
-        """Force stop recording."""
+        """Force stop recording (вызывается при активации force_stop)."""
         _LOGGER.info("Force stop recording called")
         await self._stop_recording()
 
@@ -628,9 +716,8 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         self._recording_start_time = None
         self._current_filename = None
 
-        # Проверяем, не был ли выключен переключатель во время записи
-        if not self._enabled:
-            _LOGGER.debug("Recording disabled during finalization, transitioning to disabled")
+        if not self._enabled or self._force_stopped:
+            _LOGGER.debug("Recording disabled or force stopped during finalization, transitioning to disabled")
             await self._update_state(STATE_DISABLED)
         else:
             _LOGGER.debug("Transitioning to idle")
