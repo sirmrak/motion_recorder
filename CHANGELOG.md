@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.1.3 (2026-07-17)
+
+### Bug Fixes
+
+- Test
+  ([`0d64069`](https://git.darkmode.duckdns.org/sirmrak/motion_recorder/commit/0d64069548d980814ae3403c2b6b43ac4491b918))
+
+
 ## v1.1.2 (2026-07-11)
 
 ### Bug Fixes
