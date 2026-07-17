@@ -6,13 +6,11 @@ on:
       - main
       - master
 
-env:
-  GIT_SSL_NO_VERIFY: true
-
 jobs:
   update-version:
     name: Update Version
     runs-on: ubuntu-latest
+    # Пропускаем запуск, если коммит сделал сам бот (избегаем бесконечного цикла)
     if: github.actor != 'gitea-actions[bot]' && github.actor != 'Gitea Actions Bot'
     permissions:
       contents: write
@@ -41,29 +39,8 @@ jobs:
         env:
           GITEA_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          echo "🧹 Сбрасываем конфликтующие переменные Gitea Actions..."
           unset GITHUB_SERVER_URL
           unset GITHUB_API_URL
           unset GITHUB_REPOSITORY
 
-          echo "🔐 Записываем оригинальный Root CA от mkcert из секретов..."
-          echo "${{ secrets.LOCAL_ROOT_CA }}" > /tmp/rootCA.crt
-
-          # Проверка на случай, если секрет забыли настроить
-          if [ ! -s /tmp/rootCA.crt ]; then
-            echo "❌ Ошибка: Секрет LOCAL_ROOT_CA пуст. Проверьте настройки репозитория!"
-            exit 1
-          fi
-
-          echo "✅ Root CA успешно прочитан."
-
-          # Находим, где конкретно Python (библиотека certifi) хранит свои сертификаты
-          CERTIFI_PATH=$(python3 -c "import certifi; print(certifi.where())")
-          echo "Путь к bundle Python: $CERTIFI_PATH"
-
-          # Внедряем корневой сертификат mkcert в конец доверенного списка Python
-          cat /tmp/rootCA.crt >> "$CERTIFI_PATH"
-          echo "✅ Root CA от mkcert добавлен в доверенные для Python!"
-
-          echo "🚀 Запускаем semantic-release..."
           semantic-release version
