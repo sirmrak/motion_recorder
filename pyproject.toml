@@ -12,8 +12,8 @@ upload_to_vcs_release = false
 
 [tool.semantic_release.remote]
 type = "gitea"
-domain = "192.168.200.208:3000"
-api_domain = "192.168.200.208:3000"
+domain = "git.darkmode.duckdns.org"
+api_domain = "git.darkmode.duckdns.org"
 
 [tool.semantic_release.branches.main]
 match = "(main|master)"
