@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - dev
 
 jobs:
   update-version:
@@ -42,5 +43,4 @@ jobs:
           unset GITHUB_SERVER_URL
           unset GITHUB_API_URL
           unset GITHUB_REPOSITORY
-
           semantic-release version
