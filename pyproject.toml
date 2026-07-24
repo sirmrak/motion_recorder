@@ -7,7 +7,7 @@ version_variables = [
 
 commit_message = "chore(release): v{version}"
 
-# ВАЖНО: не создаём релиз в Gitea (релиз будет в GitHub)
+# Отключаем создание релиза через API Gitea (релиз будет создаваться в GitHub)
 upload_to_vcs_release = false
 
 [tool.semantic_release.remote]
@@ -15,9 +15,16 @@ type = "gitea"
 domain = "git.darkmode.duckdns.org"
 api_domain = "git.darkmode.duckdns.org"
 
+# Настройки для stable релизов (ветка main)
 [tool.semantic_release.branches.main]
 match = "(main|master)"
 prerelease = false
+
+# Настройки для beta релизов (ветка dev)
+[tool.semantic_release.branches.dev]
+match = "dev"
+prerelease = true
+prerelease_token = "beta"
 
 [tool.semantic_release.commit_parser_options]
 allowed_tags = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "chore", "revert"]
