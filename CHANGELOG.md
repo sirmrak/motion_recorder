@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.1.4 (2026-07-24)
+
+### Bug Fixes
+
+- Фиксы и оптимизации
+  ([`5e3e149`](https://git.darkmode.duckdns.org/sirmrak/motion_recorder/commit/5e3e149c37ac708ac7751f052a29985b7443fe54))
+
+
 ## v1.1.3 (2026-07-17)
 
 ### Bug Fixes
