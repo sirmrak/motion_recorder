@@ -4,10 +4,9 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:  # Позволяет запускать вручную
+  workflow_dispatch:
 
 jobs:
-  # Шаг 1: Валидация структуры HA интеграции
   validate:
     name: Validate Integration
     runs-on: ubuntu-latest
@@ -23,7 +22,6 @@ jobs:
         with:
           category: "integration"
 
-  # Шаг 2: Запуск тестов (если есть)
   test:
     name: Run Tests
     runs-on: ubuntu-latest
@@ -51,7 +49,6 @@ jobs:
             echo "No tests directory found, skipping tests"
           fi
 
-  # Шаг 3: Проверка стиля кода
   lint:
     name: Code Quality
     runs-on: ubuntu-latest
@@ -77,7 +74,6 @@ jobs:
         run: |
           ruff check custom_components/motion_light/ || echo "Ruff issues found"
 
-  # Шаг 4: Создание релиза (только если все проверки пройдены)
   release:
     name: Create Release
     runs-on: ubuntu-latest
@@ -97,6 +93,15 @@ jobs:
           TAG=${GITHUB_REF#refs/tags/}
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           
+          # Проверяем, это beta или stable релиз
+          if [[ "$TAG" == *"beta"* ]]; then
+            echo "is_beta=true" >> $GITHUB_OUTPUT
+            PRERELEASE_FLAG="--prerelease"
+          else
+            echo "is_beta=false" >> $GITHUB_OUTPUT
+            PRERELEASE_FLAG=""
+          fi
+          
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           
           if [ -z "$PREV_TAG" ]; then
@@ -108,25 +113,45 @@ jobs:
           echo "commits<<EOF" >> $GITHUB_OUTPUT
           echo "$COMMITS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-
+      
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           COMMITS="${{ steps.tag.outputs.commits }}"
+          IS_BETA="${{ steps.tag.outputs.is_beta }}"
           
           echo "🚀 Создаём релиз $TAG в GitHub..."
+          echo "Тип релиза: IS_BETA=$IS_BETA"
+          
+          # Определяем заголовок
+          if [ "$IS_BETA" = "true" ]; then
+            TITLE="Beta Release $TAG"
+            PRERELEASE_FLAG="--prerelease"
+          else
+            TITLE="Release $TAG"
+            PRERELEASE_FLAG=""
+          fi
           
           cat > /tmp/release_notes.md << EOF
-          ## Изменения в версии $TAG
+          ## $TITLE
           
           $COMMITS
           EOF
           
-          gh release create "$TAG" \
-            --title "Release $TAG" \
-            --notes-file /tmp/release_notes.md \
-            --target main
+          # Создаём релиз
+          if [ -n "$PRERELEASE_FLAG" ]; then
+            gh release create "$TAG" \
+              --title "$TITLE" \
+              --notes-file /tmp/release_notes.md \
+              --target main \
+              --prerelease
+          else
+            gh release create "$TAG" \
+              --title "$TITLE" \
+              --notes-file /tmp/release_notes.md \
+              --target main
+          fi
           
           echo "✅ Релиз создан!"
