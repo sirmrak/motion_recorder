@@ -1,11 +1,15 @@
 """Coordinator for Motion Recorder."""
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.helpers.event import async_track_state_change_event, async_call_later, async_track_time_change
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_call_later,
+    async_track_time_change,
+)
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -39,26 +43,36 @@ try:
 except ImportError:
     _RECORDER_PROVIDER = "recorder"
 
+# Порог валидности файла записи (байт)
 _MIN_RECORDING_SIZE = 1024
+
+# Таймауты и параметры вынесены из тела методов для удобства тюнинга
+_STREAM_CREATE_TIMEOUT = 30.0   # Создание стрима (камера может быть недоступна)
+_RECORD_STOP_TIMEOUT = 10.0     # Ожидание штатного завершения задачи записи
+_TASK_CANCEL_TIMEOUT = 5.0      # Ожидание после cancel зависшей задачи
+_ERROR_RECOVERY_DELAY = 5       # Пауза перед возвратом из состояния error
+_FINALIZE_POLL_STEP = 0.2       # Шаг опроса файла при финализации
+_FINALIZE_POLL_TRIES = 10       # Макс. число попыток (итого ~2 сек)
+_CLEANUP_HOUR = 3               # Час ежедневной очистки
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def _get_config_value(entry, key, default=None):
-    """Get config value from options first, then from data, then default."""
+    """Значение настройки: сначала options, потом data, потом default."""
     return entry.options.get(key, entry.data.get(key, default))
 
 
 def _mkdir_parents(p: Path):
-    """Path.mkdir с keyword args для executor."""
+    """Path.mkdir с keyword-аргументами для executor."""
     p.mkdir(parents=True, exist_ok=True)
 
 
 class MotionRecorderCoordinator(DataUpdateCoordinator):
-    """Motion Recorder coordinator."""
+    """Координатор Motion Recorder."""
 
     def __init__(self, hass: HomeAssistant, entry) -> None:
-        """Initialize coordinator."""
+        """Инициализация координатора."""
         super().__init__(
             hass,
             _LOGGER,
@@ -68,9 +82,11 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self.camera_entity = entry.data[CONF_CAMERA_ENTITY]
 
-        # Читаем настройки из options с fallback на data
+        # Настройки: options с fallback на data
         self.save_path = _get_config_value(entry, CONF_SAVE_PATH, "{camera_name}")
-        self.filename_template = _get_config_value(entry, CONF_FILENAME_TEMPLATE, "%d-%m-%Y_%H-%M-%S")
+        self.filename_template = _get_config_value(
+            entry, CONF_FILENAME_TEMPLATE, "%d-%m-%Y_%H-%M-%S"
+        )
         self.max_duration = _get_config_value(entry, CONF_MAX_DURATION, 30)
         self.prebuffer = _get_config_value(entry, CONF_PREBUFFER, 0)
         self.motion_sensors = _get_config_value(entry, CONF_MOTION_SENSORS, [])
@@ -78,44 +94,52 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         self.off_delay = _get_config_value(entry, CONF_OFF_DELAY, 0)
         self.force_stop_sensor = _get_config_value(entry, CONF_FORCE_STOP_SENSOR)
         self.force_stop_state = _get_config_value(entry, CONF_FORCE_STOP_STATE, "off")
-        self.retention_days = _get_config_value(entry, CONF_RETENTION_DAYS, DEFAULT_RETENTION_DAYS)
+        self.retention_days = _get_config_value(
+            entry, CONF_RETENTION_DAYS, DEFAULT_RETENTION_DAYS
+        )
 
         # Управляемые устройства
         self.controlled_entities = _get_config_value(entry, CONF_CONTROLLED_ENTITIES, [])
-        self.control_states = _get_config_value(entry, CONF_CONTROL_STATES, DEFAULT_CONTROL_STATES)
+        self.control_states = _get_config_value(
+            entry, CONF_CONTROL_STATES, DEFAULT_CONTROL_STATES
+        )
         self._we_turned_on: set[str] = set()
+        # Кэш логического флага «устройства должны быть включены»,
+        # чтобы не опрашивать состояния при каждом переходе состояния
+        self._control_should_be_on: bool | None = None
 
-        # State management
+        # Состояние
         self._state = STATE_IDLE
-        self._attributes = {}
+        self._attributes: dict = {}
 
-        # Enabled state
+        # Флаги разрешения/блокировки записи
         self._enabled = True
-        
         self._force_stopped = False
 
-        # Listeners
-        self._unsub_motion_listeners = []
+        # Подписки
+        self._unsub_motion_listeners: list = []
         self._unsub_force_stop_listener = None
         self._cleanup_unsub = None
 
-        # Timers
+        # Таймеры
         self._motion_detect_timer = None
         self._off_delay_timer = None
 
-        # Recording
+        # Текущая запись
         self._current_stream = None
         self._current_record_task = None
         self._recording_start_time = None
         self._current_filename = None
 
-        # Statistics
+        # Статистика
         self._recordings_count = 0
         self._total_duration = 0
         self._total_size = 0
 
+    # === Пути ===
+
     def _get_media_base_path(self) -> Path:
-        """Получить базовый путь к медиа."""
+        """Базовый путь к медиа."""
         media_dirs = self.hass.config.media_dirs
         if media_dirs:
             if "media" in media_dirs:
@@ -127,23 +151,23 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         return Path(self.hass.config.path("media"))
 
     def _get_save_dir(self) -> Path:
-        """Получить полную папку для сохранения записей."""
+        """Полная папка для сохранения записей."""
         camera_name = self.camera_entity.split(".")[1]
         save_path = self.save_path.format(camera_name=camera_name)
-
         if Path(save_path).is_absolute():
             return Path(save_path)
-
         return self._get_media_base_path() / save_path
+
+    # === Свойства состояния ===
 
     @property
     def state(self):
-        """Return current state."""
+        """Текущее состояние."""
         return self._state
 
     @property
     def attributes(self):
-        """Return current attributes with statistics."""
+        """Атрибуты со статистикой."""
         attrs = self._attributes.copy()
         attrs["recordings_count"] = self._recordings_count
         attrs["total_duration"] = self._total_duration
@@ -153,35 +177,66 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
 
     @property
     def is_enabled(self) -> bool:
-        """Return if recording is enabled."""
+        """Разрешена ли запись."""
         return self._enabled
 
+    # === Хелперы блокировок ===
+
+    def _is_blocked(self) -> bool:
+        """Единая проверка причин запрета записи.
+
+        Запись запрещена, если интеграция выключена переключателем
+        либо активирована блокировка force_stop.
+        """
+        return (not self._enabled) or self._force_stopped
+
+    def _idle_or_disabled_state(self) -> str:
+        """«Спокойное» состояние с учётом блокировок."""
+        return STATE_DISABLED if self._is_blocked() else STATE_IDLE
+
+    async def _force_disable(self, reason: str) -> None:
+        """Жёсткая остановка всего и переход в DISABLED.
+
+        Единая точка для выключения переключателем и активации force_stop:
+        отменяет таймеры, останавливает запись, гасит зависшие задачи,
+        обнуляет стрим. Идемпотентна — повторный вызов безопасен.
+        """
+        _LOGGER.info("Force disable: %s", reason)
+        await self._cancel_all_timers()
+
+        # Останавливаем запись в активной фазе (recording или delaying)
+        if self._state in (STATE_RECORDING, STATE_DELAYING):
+            await self._stop_recording()
+
+        # Гасим задачу, которая могла зависнуть на создании стрима/записи
+        if self._current_record_task and not self._current_record_task.done():
+            _LOGGER.info("Cancelling active record task (%s)", reason)
+            self._current_record_task.cancel()
+            try:
+                await asyncio.wait_for(
+                    self._current_record_task, timeout=_TASK_CANCEL_TIMEOUT
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._current_record_task = None
+
+        self._current_stream = None
+        await self._update_state(STATE_DISABLED)
+
+    # === Включение/выключение ===
+
     async def set_enabled(self, enabled: bool) -> None:
-        """Set enabled state."""
+        """Переключить разрешение записи."""
         self._enabled = enabled
         _LOGGER.info("Recording %s", "enabled" if enabled else "disabled")
 
         if not enabled:
-            await self._cancel_all_timers()
-            
-            # Останавливаем запись если идёт
-            if self._state == STATE_RECORDING:
-                await self._stop_recording()
-            
-            # Переходим в disabled
+            await self._force_disable("switch turned off")
+        elif self._force_stopped:
+            _LOGGER.info("Cannot enable: force stop is active")
             await self._update_state(STATE_DISABLED)
         else:
-            # Включаем только если не заблокированы force_stop
-            if self._force_stopped:
-                _LOGGER.info("Cannot enable: force stop is active")
-                await self._update_state(STATE_DISABLED)
-            else:
-                await self._update_state(STATE_IDLE)
-
-        self.async_set_updated_data({
-            "state": self._state,
-            "attributes": self.attributes
-        })
+            await self._update_state(STATE_IDLE)
 
     async def _cancel_all_timers(self) -> None:
         """Отменить все активные таймеры."""
@@ -189,35 +244,37 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Cancelling motion detect timer")
             self._motion_detect_timer()
             self._motion_detect_timer = None
-        
         if self._off_delay_timer:
             _LOGGER.debug("Cancelling off-delay timer")
             self._off_delay_timer()
             self._off_delay_timer = None
 
+    # === Жизненный цикл ===
+
     async def async_setup(self):
-        """Set up the coordinator."""
+        """Запуск координатора."""
         _LOGGER.info("Setting up Motion Recorder coordinator for %s", self.camera_entity)
         _LOGGER.info(
-            "Settings: max_duration=%s, off_delay=%s, retention_days=%s, controlled_entities=%s, control_states=%s",
+            "Settings: max_duration=%s, off_delay=%s, retention_days=%s, "
+            "controlled_entities=%s, control_states=%s",
             self.max_duration, self.off_delay, self.retention_days,
-            self.controlled_entities, self.control_states
+            self.controlled_entities, self.control_states,
         )
         await self._update_state(STATE_IDLE)
         await self._start_listening()
 
-        # Запускаем ежедневную очистку в 3:00 ночи
+        # Ежедневная очистка в _CLEANUP_HOUR:00
         self._cleanup_unsub = async_track_time_change(
             self.hass,
             self._cleanup_old_recordings,
-            hour=3,
+            hour=_CLEANUP_HOUR,
             minute=0,
             second=0,
         )
-        _LOGGER.info("Daily cleanup scheduled at 03:00")
+        _LOGGER.info("Daily cleanup scheduled at %02d:00", _CLEANUP_HOUR)
 
     async def async_shutdown(self):
-        """Shut down the coordinator."""
+        """Остановка координатора."""
         _LOGGER.info("Shutting down Motion Recorder coordinator")
         await self._stop_listening()
 
@@ -225,7 +282,7 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             self._cleanup_unsub()
             self._cleanup_unsub = None
 
-        # Выключаем все устройства, которые мы включили
+        # Гасим устройства, которые включали сами
         for entity_id in list(self._we_turned_on):
             try:
                 domain = entity_id.split(".")[0]
@@ -240,55 +297,62 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         if self._current_stream:
             await self._stop_recording()
 
+    # === Публикация состояния и управление устройствами ===
+
     async def _update_state(self, state, **attributes):
-        """Update state and attributes."""
+        """Обновить состояние и атрибуты, опубликовать данные."""
         old_state = self._state
         self._state = state
         self._attributes.update(attributes)
         _LOGGER.debug("State changed: %s → %s", old_state, state)
         self.async_set_updated_data({
             "state": state,
-            "attributes": self.attributes
+            "attributes": self.attributes,
         })
 
-        # Управляем устройствами при изменении состояния
+        # Управляем устройствами только при реальной смене состояния
         if old_state != state:
             await self._update_controlled_entities()
 
     async def _update_controlled_entities(self) -> None:
-        """Включить/выключить управляемые устройства в зависимости от состояния."""
+        """Синхронизировать управляемые устройства с состоянием.
+
+        Реагирует только на изменение логического флага should_be_on,
+        чтобы не опрашивать состояния сущностей при каждом переходе.
+        """
         if not self.controlled_entities:
             return
 
         should_be_on = self._state in self.control_states
+        if should_be_on == self._control_should_be_on:
+            return
+        self._control_should_be_on = should_be_on
 
         for entity_id in self.controlled_entities:
             try:
                 domain = entity_id.split(".")[0]
-                current_state = self.hass.states.get(entity_id)
-
-                if current_state is None:
+                current = self.hass.states.get(entity_id)
+                if current is None:
                     _LOGGER.warning("Controlled entity %s not found, skipping", entity_id)
                     continue
 
-                is_on = current_state.state == "on"
-
+                is_on = current.state == "on"
                 if should_be_on and not is_on:
-                    _LOGGER.info("Turning ON %s because state is '%s'", entity_id, self._state)
+                    _LOGGER.info("Turning ON %s (state=%s)", entity_id, self._state)
                     await self.hass.services.async_call(
                         domain, "turn_on", {"entity_id": entity_id}, blocking=False,
                     )
                     self._we_turned_on.add(entity_id)
-
                 elif not should_be_on and is_on and entity_id in self._we_turned_on:
-                    _LOGGER.info("Turning OFF %s because state is '%s'", entity_id, self._state)
+                    _LOGGER.info("Turning OFF %s (state=%s)", entity_id, self._state)
                     await self.hass.services.async_call(
                         domain, "turn_off", {"entity_id": entity_id}, blocking=False,
                     )
                     self._we_turned_on.discard(entity_id)
-
             except Exception as err:
-                _LOGGER.error("Error controlling entity %s: %s", entity_id, err, exc_info=True)
+                _LOGGER.error("Error controlling %s: %s", entity_id, err, exc_info=True)
+
+    # === Очистка старых записей ===
 
     async def _cleanup_old_recordings(self, now=None):
         """Удалить записи старше retention_days."""
@@ -302,8 +366,7 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             return
 
         _LOGGER.info("Starting cleanup of recordings older than %d days", self.retention_days)
-
-        cutoff_time = datetime.now() - timedelta(days=self.retention_days)
+        cutoff_ts = (dt_util.now() - timedelta(days=self.retention_days)).timestamp()
         deleted_count = 0
         deleted_size = 0
 
@@ -311,11 +374,11 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             nonlocal deleted_count, deleted_size
             try:
                 for file_path in save_dir.glob("*.mp4"):
-                    if file_path.stat().st_mtime < cutoff_time.timestamp():
-                        size = file_path.stat().st_size
+                    st = file_path.stat()  # один stat на файл
+                    if st.st_mtime < cutoff_ts:
                         file_path.unlink()
                         deleted_count += 1
-                        deleted_size += size
+                        deleted_size += st.st_size
                         _LOGGER.debug("Deleted old recording: %s", file_path.name)
             except Exception as err:
                 _LOGGER.error("Error during cleanup: %s", err)
@@ -325,13 +388,15 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         if deleted_count > 0:
             _LOGGER.info(
                 "Cleanup completed: deleted %d files (%.1f MB)",
-                deleted_count, deleted_size / (1024 * 1024)
+                deleted_count, deleted_size / (1024 * 1024),
             )
         else:
             _LOGGER.debug("No old recordings found to delete")
 
+    # === Подписки на сенсоры ===
+
     async def _start_listening(self):
-        """Start listening to motion sensors."""
+        """Подписаться на сенсоры движения и force_stop."""
         _LOGGER.info("Starting to listen to motion sensors: %s", self.motion_sensors)
         for sensor in self.motion_sensors:
             unsub = async_track_state_change_event(
@@ -340,13 +405,16 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             self._unsub_motion_listeners.append(unsub)
 
         if self.force_stop_sensor:
-            _LOGGER.info("Force stop sensor: %s → %s", self.force_stop_sensor, self.force_stop_state)
+            _LOGGER.info(
+                "Force stop sensor: %s → %s",
+                self.force_stop_sensor, self.force_stop_state,
+            )
             self._unsub_force_stop_listener = async_track_state_change_event(
                 self.hass, [self.force_stop_sensor], self._force_stop_state_changed
             )
 
     async def _stop_listening(self):
-        """Stop listening to sensors."""
+        """Отписаться от сенсоров."""
         for unsub in self._unsub_motion_listeners:
             unsub()
         self._unsub_motion_listeners = []
@@ -357,41 +425,40 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
 
     @callback
     def _motion_state_changed(self, event):
-        """Handle motion sensor state change — ONLY on edges (fronts)."""
+        """Обработка смены состояния сенсора движения — только фронты."""
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
-
         if not new_state:
+            return
+
+        # Не плодим задачи, пока запись запрещена или идёт финализация
+        if self._is_blocked():
+            return
+        if self._state == STATE_FINALIZING:
+            _LOGGER.debug("Ignoring motion event during %s", self._state)
             return
 
         sensor_entity = event.data.get("entity_id")
         old_s = old_state.state if old_state else None
         new_s = new_state.state
-
-        if self._state == STATE_FINALIZING:
-            _LOGGER.debug("Ignoring motion event during %s", self._state)
-            return
-
         _LOGGER.debug("Motion event: %s %s → %s", sensor_entity, old_s, new_s)
 
         if new_s == "on" and old_s != "on":
             _LOGGER.debug("Motion FRONT UP: %s (%s → %s)", sensor_entity, old_s, new_s)
             self.hass.async_create_task(self._handle_motion_detected(sensor_entity))
-
         elif old_s == "on" and new_s != "on":
             _LOGGER.debug("Motion FRONT DOWN: %s (%s → %s)", sensor_entity, old_s, new_s)
             self.hass.async_create_task(self._handle_motion_stopped())
 
     @callback
     def _force_stop_state_changed(self, event):
-        """Handle force stop sensor state change."""
+        """Обработка смены состояния сенсора force_stop."""
         new_state = event.data.get("new_state")
         if not new_state:
             return
 
         new_s = new_state.state
         sensor_entity = event.data.get("entity_id")
-        
         _LOGGER.debug("Force stop sensor %s changed to: %s", sensor_entity, new_s)
 
         if new_s == self.force_stop_state:
@@ -402,33 +469,20 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             self.hass.async_create_task(self._deactivate_force_stop())
 
     async def _activate_force_stop(self) -> None:
-        """Активировать force stop блокировку."""
+        """Активировать блокировку force_stop."""
         self._force_stopped = True
-        _LOGGER.info("Force stop blocking activated")
-        
-        # Отменяем все таймеры
-        await self._cancel_all_timers()
-        
-        # Останавливаем запись если идёт
-        if self._state == STATE_RECORDING:
-            await self._stop_recording()
-        
-        # Переходим в disabled
-        await self._update_state(STATE_DISABLED)
+        await self._force_disable("force stop sensor")
 
     async def _deactivate_force_stop(self) -> None:
-        """Деактивировать force stop блокировку."""
+        """Снять блокировку force_stop."""
         self._force_stopped = False
         _LOGGER.info("Force stop blocking deactivated")
-        
-        # Возвращаемся в idle только если запись включена
-        if self._enabled:
-            await self._update_state(STATE_IDLE)
-        else:
-            await self._update_state(STATE_DISABLED)
+        await self._update_state(self._idle_or_disabled_state())
+
+    # === Обработчики движения ===
 
     def _is_any_motion_active(self) -> bool:
-        """Check if any motion sensor is currently in 'on' state."""
+        """Активен ли сейчас хоть один сенсор движения."""
         for sensor in self.motion_sensors:
             state = self.hass.states.get(sensor)
             if state and state.state == "on":
@@ -436,20 +490,20 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         return False
 
     async def _handle_motion_detected(self, triggered_by):
-        """Handle motion detection with filter."""
-        if not self._enabled:
-            _LOGGER.debug("Recording disabled, ignoring motion")
-            return
-        
-        if self._force_stopped:
-            _LOGGER.debug("Force stop active, ignoring motion")
+        """Обработка обнаружения движения с учётом фильтра."""
+        if self._is_blocked():
+            _LOGGER.debug("Recording blocked, ignoring motion")
             return
 
         _LOGGER.debug("Motion detected by %s, current state: %s", triggered_by, self._state)
 
         if self._state == STATE_RECORDING:
             _LOGGER.debug("Already recording, updating last motion time")
-            self._attributes["last_motion_time"] = dt_util.utcnow().isoformat()
+            # Публикуем атрибут сразу, чтобы UI не «отставал»
+            await self._update_state(
+                STATE_RECORDING,
+                last_motion_time=dt_util.utcnow().isoformat(),
+            )
             return
 
         if self._state == STATE_DETECTING:
@@ -457,7 +511,7 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             return
 
         if self._state == STATE_DELAYING:
-            _LOGGER.info("Motion returned during off-delay, cancelling delay and continuing recording")
+            _LOGGER.info("Motion returned during off-delay, continuing recording")
             if self._off_delay_timer:
                 _LOGGER.debug("Cancelling off-delay timer")
                 self._off_delay_timer()
@@ -485,24 +539,23 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             await self._start_recording_after_filter(None)
 
     async def _start_recording_after_filter(self, _=None):
-        """Start recording after motion filter."""
-        if not self._enabled or self._force_stopped:
-            _LOGGER.debug("Cannot start recording: enabled=%s, force_stopped=%s", 
-                         self._enabled, self._force_stopped)
-            await self._update_state(STATE_IDLE if self._enabled else STATE_DISABLED)
-            return
-        
-        _LOGGER.debug("Starting recording after filter")
+        """Старт записи после отработки фильтра."""
         self._motion_detect_timer = None
+        if self._is_blocked():
+            _LOGGER.debug("Cannot start recording after filter: blocked")
+            await self._update_state(self._idle_or_disabled_state())
+            return
+
+        _LOGGER.debug("Starting recording after filter")
         triggered_by = self._attributes.get("triggered_by")
         await self._start_recording(triggered_by)
 
     async def _handle_motion_stopped(self):
-        """Handle motion stopped with off-delay."""
-        if self._force_stopped:
-            _LOGGER.debug("Force stop active, ignoring motion stopped")
+        """Обработка прекращения движения с off-delay."""
+        if self._is_blocked():
+            _LOGGER.debug("Recording blocked, ignoring motion stopped")
             return
-        
+
         _LOGGER.debug("Motion stopped, current state: %s", self._state)
 
         if self._is_any_motion_active():
@@ -538,21 +591,16 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Cancelling motion filter timer")
                 self._motion_detect_timer()
                 self._motion_detect_timer = None
-            
-            if not self._enabled:
-                await self._update_state(STATE_DISABLED)
-            else:
-                await self._update_state(STATE_IDLE)
+            await self._update_state(self._idle_or_disabled_state())
 
     async def _stop_recording_after_delay(self, _=None):
-        """Stop recording after off-delay."""
-        if self._force_stopped or not self._enabled:
-            _LOGGER.debug("Cannot stop recording: enabled=%s, force_stopped=%s", 
-                         self._enabled, self._force_stopped)
-            return
-        
-        _LOGGER.debug("Off-delay timer expired")
+        """Остановка записи по истечении off-delay."""
         self._off_delay_timer = None
+        if self._is_blocked():
+            _LOGGER.debug("Recording blocked, skip stop after delay")
+            return
+
+        _LOGGER.debug("Off-delay timer expired")
 
         if self._is_any_motion_active():
             _LOGGER.info("Motion is still active — continuing recording")
@@ -562,14 +610,16 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
         _LOGGER.info("No motion detected, stopping recording")
         await self._stop_recording()
 
+    # === Запись ===
+
     async def _start_recording(self, triggered_by):
-        """Start recording the camera."""
-        if not self._enabled or self._force_stopped:
-            _LOGGER.warning("Cannot start recording: enabled=%s, force_stopped=%s", 
-                          self._enabled, self._force_stopped)
-            await self._update_state(STATE_IDLE if self._enabled else STATE_DISABLED)
+        """Запустить запись камеры."""
+        if self._is_blocked():
+            _LOGGER.warning("Cannot start recording: blocked")
+            await self._update_state(self._idle_or_disabled_state())
             return
-        
+
+        filename = None
         try:
             if self._current_stream:
                 recorder_output = self._current_stream.outputs().get(_RECORDER_PROVIDER)
@@ -578,11 +628,10 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
                     return
 
             self._recording_start_time = dt_util.utcnow()
-
             await self._update_state(
                 STATE_RECORDING,
                 triggered_by=triggered_by,
-                recording_start_time=self._recording_start_time.isoformat()
+                recording_start_time=self._recording_start_time.isoformat(),
             )
 
             component = self.hass.data.get("camera")
@@ -593,7 +642,19 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             if not camera:
                 raise Exception(f"Camera {self.camera_entity} not found")
 
-            stream = await camera.async_create_stream()
+            # Таймаут на создание стрима: камера может быть недоступна
+            _LOGGER.debug("Creating stream for %s (timeout=%.0fs)",
+                          self.camera_entity, _STREAM_CREATE_TIMEOUT)
+            try:
+                stream = await asyncio.wait_for(
+                    camera.async_create_stream(), timeout=_STREAM_CREATE_TIMEOUT
+                )
+            except asyncio.TimeoutError as err:
+                raise Exception(
+                    f"Timeout creating stream for {self.camera_entity} "
+                    f"— camera may be unavailable"
+                ) from err
+
             if not stream:
                 raise Exception(f"Could not create stream for {self.camera_entity}")
 
@@ -602,13 +663,13 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             save_dir = self._get_save_dir()
             await self.hass.async_add_executor_job(_mkdir_parents, save_dir)
 
-            timestamp = datetime.now().strftime(self.filename_template)
+            timestamp = dt_util.now().strftime(self.filename_template)
             filename = save_dir / f"{timestamp}.mp4"
             self._current_filename = str(filename)
 
             _LOGGER.info(
                 "Recording started: %s (duration=%ds, lookback=%ds)",
-                filename, self.max_duration, self.prebuffer
+                filename, self.max_duration, self.prebuffer,
             )
 
             self._current_record_task = asyncio.create_task(
@@ -619,21 +680,35 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
                 )
             )
 
-            await self._current_record_task
+            # Ждём завершения с корректной обработкой отмены
+            try:
+                await self._current_record_task
+            except asyncio.CancelledError:
+                _LOGGER.info("Recording task was cancelled (stop requested)")
+
             await self._finalize_recording(str(filename))
 
+        except asyncio.CancelledError:
+            _LOGGER.info("Recording start was cancelled")
+            if filename:
+                await self._finalize_recording(str(filename))
         except Exception as err:
             _LOGGER.error("Error starting recording: %s", err, exc_info=True)
+            # При блокировке не мигаем error — сразу в спокойное состояние
+            if self._is_blocked():
+                await self._update_state(self._idle_or_disabled_state())
+                return
             await self._update_state(STATE_ERROR, error_message=str(err))
-            await asyncio.sleep(5)
-            if not self._enabled:
-                await self._update_state(STATE_DISABLED)
-            else:
-                await self._update_state(STATE_IDLE)
+            await asyncio.sleep(_ERROR_RECOVERY_DELAY)
+            await self._update_state(self._idle_or_disabled_state())
 
     async def _stop_recording(self):
-        """Stop current recording."""
-        _LOGGER.debug("Stop recording called, current_stream: %s", self._current_stream is not None)
+        """Остановить текущую запись."""
+        _LOGGER.debug(
+            "Stop recording called, stream=%s, task=%s",
+            self._current_stream is not None,
+            self._current_record_task is not None,
+        )
 
         if not self._current_stream:
             _LOGGER.warning("No current stream, nothing to stop")
@@ -646,17 +721,23 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
                 await self._current_stream.remove_provider(recorder_output)
 
                 if self._current_record_task and not self._current_record_task.done():
-                    _LOGGER.debug("Waiting for record task to complete after stop signal")
+                    _LOGGER.debug("Waiting for record task (timeout=%.0fs)", _RECORD_STOP_TIMEOUT)
                     try:
-                        await asyncio.wait_for(self._current_record_task, timeout=10.0)
+                        await asyncio.wait_for(
+                            self._current_record_task, timeout=_RECORD_STOP_TIMEOUT
+                        )
                         _LOGGER.debug("Record task completed after stop")
                     except asyncio.TimeoutError:
-                        _LOGGER.warning("Record task did not complete within timeout, cancelling")
+                        _LOGGER.warning("Record task did not complete, cancelling")
                         self._current_record_task.cancel()
                         try:
-                            await self._current_record_task
-                        except asyncio.CancelledError:
-                            pass
+                            await asyncio.wait_for(
+                                self._current_record_task, timeout=_TASK_CANCEL_TIMEOUT
+                            )
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
+                            _LOGGER.warning("Record task cancel timed out")
+                    except asyncio.CancelledError:
+                        _LOGGER.debug("Record task was cancelled")
 
                 _LOGGER.debug("Recording stopped successfully")
             else:
@@ -664,36 +745,32 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
 
         except Exception as err:
             _LOGGER.error("Error stopping recording: %s", err, exc_info=True)
+            # Принудительная отмена зависшей задачи при любой ошибке
+            if self._current_record_task and not self._current_record_task.done():
+                self._current_record_task.cancel()
             await self._update_state(STATE_ERROR, error_message=str(err))
-            await asyncio.sleep(5)
-            if not self._enabled or self._force_stopped:
-                await self._update_state(STATE_DISABLED)
-            else:
-                await self._update_state(STATE_IDLE)
+            await asyncio.sleep(_ERROR_RECOVERY_DELAY)
+            await self._update_state(self._idle_or_disabled_state())
 
     async def _force_stop_recording(self):
-        """Force stop recording (вызывается при активации force_stop)."""
+        """Принудительная остановка записи (legacy-точка входа)."""
         _LOGGER.info("Force stop recording called")
         await self._stop_recording()
 
     async def _finalize_recording(self, filename):
-        """Finalize recording and check file."""
+        """Финализация записи и проверка файла."""
         _LOGGER.debug("Finalizing recording: %s", filename)
-
         await self._update_state(STATE_FINALIZING, last_file_path=filename)
 
         filepath = Path(filename)
-
-        for _ in range(10):
-            await asyncio.sleep(0.2)
+        for _ in range(_FINALIZE_POLL_TRIES):
+            await asyncio.sleep(_FINALIZE_POLL_STEP)
             if filepath.is_file():
-                size = filepath.stat().st_size
-                if size > _MIN_RECORDING_SIZE:
+                if filepath.stat().st_size > _MIN_RECORDING_SIZE:
                     break
 
         if filepath.is_file() and filepath.stat().st_size > _MIN_RECORDING_SIZE:
             size = filepath.stat().st_size
-
             if self._recording_start_time:
                 duration = (dt_util.utcnow() - self._recording_start_time).total_seconds()
             else:
@@ -704,20 +781,22 @@ class MotionRecorderCoordinator(DataUpdateCoordinator):
             self._total_size += size
 
             _LOGGER.info(
-                "Recording completed: %s (%.1f sec, %d bytes). Total: %d recordings, %d sec, %d bytes",
+                "Recording completed: %s (%.1f sec, %d bytes). "
+                "Total: %d recordings, %d sec, %d bytes",
                 filepath, duration, size,
-                self._recordings_count, self._total_duration, self._total_size
+                self._recordings_count, self._total_duration, self._total_size,
             )
         else:
             _LOGGER.warning("Recording file not found or too small: %s", filename)
 
+        # Освобождаем ресурсы
         self._current_stream = None
         self._current_record_task = None
         self._recording_start_time = None
         self._current_filename = None
 
-        if not self._enabled or self._force_stopped:
-            _LOGGER.debug("Recording disabled or force stopped during finalization, transitioning to disabled")
+        if self._is_blocked():
+            _LOGGER.debug("Blocked during finalization, transitioning to disabled")
             await self._update_state(STATE_DISABLED)
         else:
             _LOGGER.debug("Transitioning to idle")
